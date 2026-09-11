@@ -262,7 +262,7 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 
 .scroll-target .bubble { outline: 2px dashed var(--accent); outline-offset: 4px; }
 
-/* ===== Три модели (DeepSeek V4 + GigaChat) ===== */
+/* ===== Модели (DeepSeek-flash + GigaChat) ===== */
 .msg.a .variant {
     margin: 12px 0;
     border: 1px solid #d8deee;
@@ -300,7 +300,6 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 .msg.a .variant-body { padding: 8px 14px 12px; }
 
 .msg.a .variant-ds-flash .variant-name { color: #2c4ecf; }
-.msg.a .variant-ds-pro .variant-name { color: #6a44b5; }
 .msg.a .variant-gc-base .variant-name { color: #22843a; }
 
 /* Отчёт "Анализ" (кнопка Анализ) */
@@ -521,10 +520,6 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 .compact-input {
     width: 70px;
 }
-.compact-btn {
-    font-size: .72rem;
-    padding: 4px 10px;
-}
 
 /* ===== Статистика токенов в заголовке (по моделям + полоска) ===== */
 .tstat {
@@ -542,6 +537,12 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
     text-transform: uppercase;
     letter-spacing: .3px;
     color: #8a92a6;
+}
+.tstat-head-models {
+    text-transform: none;
+    color: #4a5370;
+    font-weight: 700;
+    letter-spacing: 0;
 }
 /* Столбик моделей */
 .tstat-models {
@@ -591,6 +592,8 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 .sw-in  { background: #4d6bfe; }
 .sw-out { background: #22a06b; }
 .sw-hist { background: #e0952f; }
+.sw-compact { background: #8a63d2; }
+.sw-fromsum { background: #6a44b5; }
 
 .tstat-pct { color: #b07b1e; font-weight: 700; }
 

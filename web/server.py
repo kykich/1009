@@ -11,9 +11,8 @@
 результат (html, text, ответы моделей). HTTP-обработчик лишь передаёт данные
 между браузером и агентом.
 
-Запрос пользователя уходит агенту, который опрашивает ТРИ модели:
-  - DeepSeek V4-Flash,
-  - DeepSeek V4-Pro,
+Запрос пользователя уходит агенту, который опрашивает модели:
+  - DeepSeek-flash,
   - GigaChat (базовая, простая).
 
 JSON-API:
@@ -118,6 +117,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "has_history": has,
                 "messages": self.session.snapshot(),
                 "compact": self.session.get_compact(),
+                "context": self.session.context_stats(),
             })
         self._send_json(404, {"ok": False, "error": "Not Found"})
 
@@ -158,6 +158,30 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
     # ---------------- Обработчики: делегируют всю работу агенту ----------------
 
+    def _maybe_auto_compact(self):
+        """Автосжатие истории: обновляет summary при достижении порога.
+
+        Срабатывает, когда вытесняемая (несжатая) часть истории достигает
+        config.COMPACT_TRIGGER сообщений. Summary генерируется по этой части
+        (всё, кроме последних keep сообщений) и сохраняется отдельно.
+        """
+        try:
+            if not self.session.should_auto_compact():
+                return
+            head, end = self.session.head_to_compact()
+            if not head:
+                return
+            keep = self.session.get_compact().get("keep", config.COMPACT_KEEP)
+            summary = self.agent.compact_history(head, keep=0)
+            if summary:
+                # Сохраняем summary и границу: сообщения [0:end) покрыты им.
+                self.session.apply_summary(summary, upto=end, keep=keep)
+                print("[COMPACT] автосжатие: %d сообщ. -> summary (upto=%d)"
+                      % (len(head), end), flush=True)
+        except Exception as exc:
+            # Автосжатие не должно ломать основной запрос.
+            print("[COMPACT] автосжатие не удалось: %s" % exc, flush=True)
+
     def _handle_ask(self):
         """Принимает запрос пользователя и передаёт его агенту.
 
@@ -184,11 +208,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         # Настройки сжатия
         compact = data.get("compact")
-        if not isinstance(compact, dict):
-            compact = self.session.get_compact()
+        if isinstance(compact, dict):
+            # Клиент может прислать свои настройки (enabled/keep) — применяем.
+            self.session.set_compact(compact.get("enabled"),
+                                     compact.get("keep"),
+                                     None)
+        compact = self.session.get_compact()
 
-        # Диалог храним на сервере — берём полную историю из сессии.
-        history = self.session.snapshot()
+        # Управление контекстом: в запрос уходит сжатая история
+        # (summary + последние keep сообщений) вместо полной истории.
+        history = self.session.get_compacted_messages()
 
         result = self.agent.answer(question, history, selected,
                                    max_tokens=max_tokens,
@@ -203,6 +232,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "meta": result.get("meta", ""),
                 "usage": result.get("usage"),
             })
+            # Автосжатие: если вытесняемая часть достигла порога —
+            # обновляем summary (summary хранится отдельно и подставляется
+            # в следующий запрос вместо полной истории).
+            self._maybe_auto_compact()
+            result["compact"] = self.session.get_compact()
+            # Статистика управления контекстом (сжатых/использованных из
+            # summary сообщений) для панели интерфейса.
+            result["context"] = self.session.context_stats()
         return self._send_json(200, result)
 
     def _handle_ask_files(self):
@@ -271,13 +308,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         return self._send_json(200, result)
 
     def _handle_compact(self):
-        """Обновляет настройки сжатия сессии."""
+        """Обновляет настройки сжатия сессии (enabled/keep/summary)."""
         data = self._read_json_body()
         if not data:
             return self._send_json(400, {"ok": False, "error": "Bad JSON."})
         enabled = data.get("enabled")
         keep = data.get("keep")
         summary = data.get("summary")
+        # Пустой summary из клиента НЕ должен затирать уже сгенерированный
+        # на сервере — иначе настройки каждый раз обнуляют сжатие.
+        if not summary:
+            summary = None
         self.session.set_compact(enabled, keep, summary)
         return self._send_json(200, {
             "ok": True,
@@ -285,30 +326,38 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_compact_summary(self):
-        """Генерирует summary для текущей истории сессии."""
+        """Генерирует summary по вытесняемой части истории сессии.
+
+        Сжимаем только то, что выходит за пределы последних keep сообщений;
+        summary сохраняется отдельно и будет подставлено в следующий запрос
+        вместо полной истории.
+        """
         data = self._read_json_body()
         if not data:
             return self._send_json(400, {"ok": False, "error": "Bad JSON."})
-        # Берём полную историю без системных сообщений
-        history = self.session.snapshot()
-        dialog_msgs = [m for m in history
-                       if m.get("role") in ("user", "assistant")]
-        if len(dialog_msgs) < 4:
+        keep = data.get("keep", config.COMPACT_KEEP)
+        try:
+            keep = max(0, int(keep))
+        except (TypeError, ValueError):
+            keep = config.COMPACT_KEEP
+        # Применяем актуальный keep перед вычислением вытесняемой части.
+        self.session.set_compact(True, keep, None)
+        head, end = self.session.head_to_compact()
+        if len(head) < config.COMPACT_MIN:
             return self._send_json(200, {
-                "ok": True, "summary": "",
-                "detail": "Мало сообщений (<4) для сжатия.",
+                "ok": True, "summary": self.session.get_compact().get("summary", ""),
+                "detail": "Вытесняемая часть мала (<%d) — сжимать нечего."
+                          % config.COMPACT_MIN,
             })
-        summary = self.agent.compact_history(dialog_msgs)
+        summary = self.agent.compact_history(head, keep=0)
         if summary:
-            self.session.set_compact(True,
-                                     data.get("keep", config.COMPACT_KEEP),
-                                     summary)
+            self.session.apply_summary(summary, upto=end, keep=keep)
             return self._send_json(200, {
                 "ok": True, "summary": summary,
-                "detail": "Summary сгенерирован.",
+                "detail": "Summary сгенерирован (%d сообщ.)." % len(head),
             })
         return self._send_json(200, {
-            "ok": False, "summary": "",
+            "ok": False, "summary": self.session.get_compact().get("summary", ""),
             "detail": "Не удалось сгенерировать summary.",
         })
 
@@ -373,8 +422,8 @@ def main():
         # а недоступные модели покажут подсказку, как добавить ключ
         # (самодиагностика уже напечатана через rtk_web.py/key_check).
         api_key = ""
-        print("[!] Файл %s не найден. DeepSeek V4-Flash/V4-Pro в чате станут "
-              "недоступны до тех пор, пока вы не впишете ключ в apidpsk.txt."
+        print("[!] Файл %s не найден. DeepSeek-flash в чате станет "
+              "недоступен до тех пор, пока вы не впишете ключ в apidpsk.txt."
               % config.DS_KEY_FILE)
     args = sys.argv[1:]
     host, port = config.WEB_HOST, config.WEB_PORT

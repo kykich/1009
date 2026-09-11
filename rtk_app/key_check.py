@@ -1,5 +1,5 @@
 """
-Проверка учётных данных (ключей/файлов) для всех трёх моделей.
+Проверка учётных данных (ключей/файлов) для моделей агента.
 
 Задача модуля — перед запуском помочь пользователю понять, чего не хватает
 каждой модели:
@@ -156,25 +156,25 @@ def check_all(network=True):
     """
     reports = []
 
-    # --- DeepSeek (V4-Flash и V4-Pro делят один ключ apidpsk.txt) ---
+    # --- DeepSeek (ключ apidpsk.txt) ---
     ds_path = config.DS_KEY_FILE
     ds_txt = _read_file(ds_path)
     if ds_txt is None:
         reports.append(ReportKey(
-            "DeepSeek V4-Flash / V4-Pro", ds_path, STATUS_MISSING,
+            "DeepSeek-flash", ds_path, STATUS_MISSING,
             "файл не найден",
             "Создайте файл apidpsk.txt в корне проекта и впишите ключ "
             "DeepSeek (sk-…). Получается в кабинете api.deepseek.com → API "
             "Keys."))
     elif not ds_txt:
         reports.append(ReportKey(
-            "DeepSeek V4-Flash / V4-Pro", ds_path, STATUS_EMPTY,
+            "DeepSeek-flash", ds_path, STATUS_EMPTY,
             "файл пуст",
             "Откройте apidpsk.txt и вставьте туда API-ключ DeepSeek "
             "(sk-…), сохраните."))
     elif not _deepseek_key_shape_ok(ds_txt):
         reports.append(ReportKey(
-            "DeepSeek V4-Flash / V4-Pro", ds_path, STATUS_BAD_FORMAT,
+            "DeepSeek-flash", ds_path, STATUS_BAD_FORMAT,
             "непохоже на ключ",
             "В apidpsk.txt должен лежать ключ вида 'sk-…' одной строкой без "
             "переводов строк. Похоже, там что-то другое — замените ключ."))
@@ -183,24 +183,24 @@ def check_all(network=True):
             ok, info = _probe_deepseek(ds_path)
             if ok:
                 reports.append(ReportKey(
-                    "DeepSeek V4-Flash / V4-Pro", ds_path, STATUS_OK,
+                    "DeepSeek-flash", ds_path, STATUS_OK,
                     "ключ рабочий (пробный запрос прошёл)", ""))
             elif ok is False:
                 reports.append(ReportKey(
-                    "DeepSeek V4-Flash / V4-Pro", ds_path, STATUS_INVALID,
+                    "DeepSeek-flash", ds_path, STATUS_INVALID,
                     info,
                     "Ключ не активен / неверен. Проверьте в кабинете "
                     "DeepSeek, что ключ жив и есть баланс; замените его в "
                     "apidpsk.txt."))
             else:
                 reports.append(ReportKey(
-                    "DeepSeek V4-Flash / V4-Pro", ds_path, STATUS_SKIP,
+                    "DeepSeek-flash", ds_path, STATUS_SKIP,
                     info,
                     "Запустили чат: если модель отвечает 'Ошибка 401' — "
                     "замените ключ в apidpsk.txt."))
         else:
             reports.append(ReportKey(
-                "DeepSeek V4-Flash / V4-Pro", ds_path, STATUS_SKIP,
+                "DeepSeek-flash", ds_path, STATUS_SKIP,
                 "файл непустой (проверка сети отключена)", ""))
 
     # --- GigaChat ---
@@ -271,7 +271,7 @@ def print_report(reports, verbose=True):
             all_ok = False
         print()
     if all_ok:
-        print("Готово: все три модели доступны. Можно запускать чат.")
+        print("Готово: все модели доступны. Можно запускать чат.")
     else:
         print("Замечания выше — что мешает модели. После исправления")
         print("ключевых файлов перезапустите: python rtk_web.py .")

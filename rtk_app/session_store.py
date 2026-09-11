@@ -11,10 +11,11 @@ session/session.json. При запуске сервера хранилище п
   "updated": "ISO-время последнего сохранения",
   "count":   число сообщений,
   "messages":[ ... элементы диалога ... ],
-  "compact": {
-    "enabled": false,      // включено ли сжатие
+    "compact": {
+    "enabled": true,       // сжатие включено (автоматическое)
     "keep": 10,            // сколько последних сообщений хранить полностью
-    "summary": ""          // сжатое содержание ранней части истории
+    "summary": "",         // сжатое содержание ранней части истории
+    "upto": 0              // сколько первых сообщений УЖЕ покрыты summary
   }
 }
 
@@ -42,9 +43,10 @@ class SessionStore:
         self.lock = threading.RLock()
         self.messages = []
         self.compact = {
-            "enabled": False,
+            "enabled": bool(config.COMPACT_ENABLED),
             "keep": config.COMPACT_KEEP,
             "summary": "",
+            "upto": 0,
         }
         self.load()
 
@@ -54,9 +56,10 @@ class SessionStore:
         with self.lock:
             self.messages = []
             self.compact = {
-                "enabled": False,
+                "enabled": bool(config.COMPACT_ENABLED),
                 "keep": config.COMPACT_KEEP,
                 "summary": "",
+                "upto": 0,
             }
             if not self.path or not os.path.isfile(self.path):
                 return
@@ -72,9 +75,17 @@ class SessionStore:
                 # Загружаем настройки сжатия
                 compact = data.get("compact")
                 if isinstance(compact, dict):
-                    self.compact["enabled"] = bool(compact.get("enabled", False))
+                    self.compact["enabled"] = bool(compact.get(
+                        "enabled", config.COMPACT_ENABLED))
                     self.compact["keep"] = int(compact.get("keep", config.COMPACT_KEEP))
                     self.compact["summary"] = str(compact.get("summary", ""))
+                    self.compact["upto"] = int(compact.get("upto", 0))
+                    # Согласованность: если summary есть, но граница покрытия
+                    # не задана (старый файл без поля upto) — выводим её из
+                    # правила «всё, кроме последних keep сообщений».
+                    if self.compact["summary"] and self.compact["upto"] == 0:
+                        keep = max(0, self.compact["keep"])
+                        self.compact["upto"] = max(0, len(self.messages) - keep)
             except Exception:
                 # Битый файл не должен ронять сервер — стартуем с чистой истрии
                 self.messages = []
@@ -134,15 +145,16 @@ class SessionStore:
         with self.lock:
             self.messages = []
             self.compact = {
-                "enabled": False,
+                "enabled": bool(config.COMPACT_ENABLED),
                 "keep": config.COMPACT_KEEP,
                 "summary": "",
+                "upto": 0,
             }
             self._save_locked()
 
     # ---- Настройки сжатия ----
 
-    def set_compact(self, enabled, keep=None, summary=None):
+    def set_compact(self, enabled, keep=None, summary=None, upto=None):
         """Обновляет настройки сжатия и сохраняет на диск."""
         with self.lock:
             if enabled is not None:
@@ -151,6 +163,8 @@ class SessionStore:
                 self.compact["keep"] = int(keep)
             if summary is not None:
                 self.compact["summary"] = str(summary)
+            if upto is not None:
+                self.compact["upto"] = int(upto)
             self._save_locked()
 
     def get_compact(self):
@@ -159,25 +173,103 @@ class SessionStore:
             return dict(self.compact)
 
     def get_compacted_messages(self):
-        """Возвращает историю с применённым сжатием.
+        """Возвращает историю для отправки в запрос (сжатие подставлено).
 
-        Если сжатие включено и есть summary:
-          - последние N сообщений (keep) возвращаются полностью
-          - предыдущие заменяются на {"role": "system", "content": summary}
-        Если сжатие выключено:
-          - возвращаются все сообщения как есть
+        Правило управления контекстом:
+          * если сжатие включено и есть summary — в запрос уходят
+            [summary] + последние keep сообщений (как есть);
+          * сообщения, уже покрытые summary (индекс < upto), в запрос
+            НЕ попадают — вместо них идёт summary;
+          * если сжатие выключено — возвращаются все сообщения как есть.
         """
         with self.lock:
             if not self.compact["enabled"] or not self.compact["summary"]:
                 return list(self.messages)
             keep = max(0, self.compact["keep"])
-            if keep >= len(self.messages):
-                return list(self.messages)
-            # Берём последние keep сообщений
+            # Последние keep сообщений — всегда полностью, «как есть».
             recent = list(self.messages[-keep:]) if keep > 0 else []
-            # Добавляем summary как системное сообщение
             summary_msg = {
                 "role": "system",
                 "content": self.compact["summary"],
             }
             return [summary_msg] + recent
+
+    def context_stats(self):
+        """Статистика управления контекстом (для интерфейса).
+
+        Возвращает dict:
+          total      — всего сообщений в полной истории;
+          keep       — сколько последних сообщений передаётся полностью;
+          compacted  — сколько сообщений покрыто summary (сжато), >= 0;
+          sent       — сколько сообщений реально уйдёт в запрос
+                       (summary + последние keep);
+          from_summary — сколько сообщений заменено summary в запросе
+                       (это же число = compacted, т.е. «использовано из summary»);
+          has_summary  — сгенерирован ли summary вообще;
+          summary_len  — длина текста summary.
+        """
+        with self.lock:
+            total = len(self.messages)
+            keep = max(0, self.compact["keep"])
+            upto = max(0, self.compact.get("upto", 0))
+            has_summary = bool(self.compact["enabled"] and self.compact["summary"])
+            if has_summary:
+                # Граница покрытия: сохранённое upto. Если оно не задано
+                # (0) при непустой истории — выводим «всё, кроме последних keep».
+                if upto <= 0 and total > 0:
+                    upto = max(0, total - keep)
+                # Покрыто summary ровно `upto` сообщений (но не больше общего).
+                compacted = min(upto, total)
+                recent = min(keep, total)
+                sent = recent + 1  # +1 = само сообщение summary
+                from_summary = compacted
+            else:
+                compacted = 0
+                sent = total
+                from_summary = 0
+            return {
+                "total": total,
+                "keep": keep,
+                "compacted": compacted,
+                "sent": sent,
+                "from_summary": from_summary,
+                "has_summary": has_summary,
+                "summary_len": len(self.compact["summary"]) if has_summary else 0,
+            }
+
+    def head_to_compact(self):
+        """Возвращает вытесняемую (несжатую) часть истории.
+
+        Это сообщения, которые ещё не покрыты summary (индекс >= upto),
+        но уже должны быть вытеснены за пределы последних keep сообщений.
+
+        Возвращает кортеж (head, end_index):
+          head      — список сообщений, подлежащих сжатию (может быть пуст);
+          end_index — индекс, до которого (не включая) они будут покрыты
+                      summary после сохранения (т.е. граница up_to).
+        """
+        with self.lock:
+            keep = max(0, self.compact["keep"])
+            upto = max(0, self.compact.get("upto", 0))
+            end = len(self.messages) - keep
+            if end <= upto:
+                return [], upto
+            head = list(self.messages[upto:end])
+            return head, end
+
+    def should_auto_compact(self):
+        """Пора ли запускать автосжатие (накопилось >= COMPACT_TRIGGER)."""
+        head, _end = self.head_to_compact()
+        return len(head) >= config.COMPACT_TRIGGER
+
+    def apply_summary(self, summary, upto=None, keep=None):
+        """Сохраняет summary и границу покрытия (до какого сообщения)."""
+        with self.lock:
+            self.compact["enabled"] = True
+            if keep is not None:
+                self.compact["keep"] = max(0, int(keep))
+            if upto is not None:
+                self.compact["upto"] = max(0, int(upto))
+            if summary is not None:
+                self.compact["summary"] = str(summary)
+            self._save_locked()

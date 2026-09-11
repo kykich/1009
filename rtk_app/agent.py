@@ -20,8 +20,7 @@ __all__ = ["Agent"]
 
 # Источники "голосов": (провайдер, имя модели, метка для отображения, css-класс)
 SOURCES = (
-    ("deepseek", config.DS_MODELS[0], "DeepSeek V4-Flash", "ds-flash"),
-    ("deepseek", config.DS_MODELS[1], "DeepSeek V4-Pro", "ds-pro"),
+    ("deepseek", config.DS_MODELS[0], "DeepSeek-flash", "ds-flash"),
     ("gigachat", config.GC_MODEL, "GigaChat", "gc-base"),
 )
 
@@ -156,12 +155,27 @@ class Agent:
             print("[TRACE] Agent.answer() пустой вопрос -> ранний выход", flush=True)
             return Ok(self).value(ok=False, error="Пустой вопрос.", trace=trace)
 
-        # Применяем сжатие истории если включено
-        if compact and compact.get("enabled") and compact.get("summary"):
+        # Сжатие истории.
+        # Основной путь: сервер уже прислал сжатую историю
+        # ([summary] + последние keep сообщений). Тогда повторно сжимать
+        # НЕЛЬЗЯ — иначе summary будет отброшен. Здесь _apply_compact
+        # используется лишь как fallback, если история пришла полной,
+        # но сжатие включено (например, при вызове агента вне сервера).
+        already_compacted = (
+            isinstance(history, list) and history
+            and isinstance(history[0], dict)
+            and history[0].get("role") == "system"
+        )
+        if (not already_compacted and compact
+                and compact.get("enabled") and compact.get("summary")):
             history = self._apply_compact(history, compact)
             trace.append({"kind": "act", "title": "Агент: применено сжатие истории",
                           "detail": "сохранено %d последних сообщений, остальное — summary"
                                     % compact.get("keep", config.COMPACT_KEEP)})
+        elif already_compacted:
+            trace.append({"kind": "act",
+                          "title": "Агент: контекст уже сжат (summary + последние)",
+                          "detail": "сжатие применено на сервере, повторно не выполняется"})
 
         messages = self._build_messages(history, question)
         hlen = len(history) if isinstance(history, list) else 0
@@ -485,26 +499,40 @@ class Agent:
             return s
         return s[:n] + "\n[... текст обрезан для анализа ...]"
 
-    def compact_history(self, messages):
-        """Генерирует summary для ранней части истории диалога.
+    def compact_history(self, messages, keep=None):
+        """Генерирует summary для ВЫТЕСНЯЕМОЙ части истории диалога.
 
-        messages — полный список сообщений (без системного промпта).
-        Возвращает строку summary или None при ошибке.
+        messages — полный список сообщений диалога (без системного промпта).
+        keep — сколько последних сообщений НЕ сжимать (остаются как есть).
+
+        Возвращает строку summary (по части истории до последних keep
+        сообщений) или None, если сжимать нечего / произошла ошибка.
         """
-        if not messages or len(messages) < 4:
+        keep = config.COMPACT_KEEP if keep is None else max(0, int(keep))
+        # Сжимаем только то, что вытесняется из контекста: всё, кроме
+        # последних keep сообщений. Если истории мало — сжимать нечего.
+        tail = messages[-keep:] if keep > 0 else []
+        head = messages[:-keep] if keep > 0 else list(messages)
+        if len(head) < config.COMPACT_MIN:
             return None
 
-        # Формируем текст для сжатия
-        lines = ["Сжати следующий диалог. Сохрани ключевые факты, темы и решения."]
-        for m in messages:
+        # Формируем текст для сжатия (длинные сообщения обрезаем).
+        cap = config.COMPACT_MSG_CAP
+        lines = ["Сожми следующий фрагмент диалога в краткое summary.",
+                 "Сохрани ключевые факты, темы, договорённости и решения,",
+                 "чтобы по summary можно было продолжить беседу.",
+                 ""]
+        for m in head:
             role = m.get("role", "unknown")
             content = str(m.get("content", ""))
             if not content:
                 continue
+            if len(content) > cap:
+                content = content[:cap] + " […]"
             if role == "user":
-                lines.append("Пользователь: " + content[:500])
+                lines.append("Пользователь: " + content)
             elif role == "assistant":
-                lines.append("Ассистент: " + content[:500])
+                lines.append("Ассистент: " + content)
 
         prompt = "\n\n".join(lines)
         messages_for_compact = [
@@ -522,7 +550,8 @@ class Agent:
             elapsed = time.perf_counter() - t0
             summary = res.get("content", "") if isinstance(res, dict) else str(res)
             if summary:
-                print("[COMPACT] summary генерация %.2f c, длина %d" % (elapsed, len(summary)), flush=True)
+                print("[COMPACT] summary генерация %.2f c, длина %d, сжато %d сообщ."
+                      % (elapsed, len(summary), len(head)), flush=True)
             return summary
         except Exception as exc:
             print("[COMPACT] ошибка: %s" % exc, flush=True)

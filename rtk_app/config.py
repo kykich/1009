@@ -8,10 +8,9 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # --- DeepSeek ---
 DS_API_URL = "https://api.deepseek.com/chat/completions"
 DS_KEY_FILE = os.path.join(BASE_DIR, "apidpsk.txt")
-# Модели, которые дают голоса (флеш и про).
+# Модель DeepSeek, которая даёт голос. Имя модели в API — deepseek-flash.
 DS_MODELS = [
-    "deepseek-v4-flash",
-    "deepseek-v4-pro",
+    "deepseek-flash",
 ]
 
 # --- GigaChat (облачный Сбер) ---
@@ -33,7 +32,7 @@ WEB_ROOT = BASE_DIR
 # --- Alias / метки ---
 KEY_FILE = DS_KEY_FILE
 API_URL = DS_API_URL
-MODEL = "DeepSeek V4-Flash | V4-Pro | GigaChat"
+MODEL = "DeepSeek-flash | GigaChat"
 
 # --- Параметры генерации по умолчанию ---
 # Температура, если пользователь не указал свою для модели
@@ -57,14 +56,24 @@ SESSION_DIR = os.path.join(BASE_DIR, "session")
 SESSION_FILE = os.path.join(SESSION_DIR, "session.json")
 
 # --- Сжатие истории диалога ---
-# Сколько последних сообщений хранить полностью (остальное — summary)
+# Сколько последних сообщений хранить/передавать полностью (остальное — summary)
 COMPACT_KEEP = 10
-# Включить сжатие истории по умолчанию
-COMPACT_ENABLED = False
+# Сжатие истории включено ВСЕГДА и выполняется АВТОМАТИЧЕСКИ (без кнопки):
+# как только накопится порог несжатых сообщений, сервер сам генерирует
+# summary и подставляет его в следующий запрос вместо ранней истории.
+COMPACT_ENABLED = True
+# Порог автосжатия: как только вытесняемая (несжатая) часть истории достигает
+# столько сообщений — summary обновляется автоматически.
+COMPACT_TRIGGER = 10
+# Минимум сообщений в диалоге, при котором генерация summary имеет смысл.
+COMPACT_MIN = 4
+# Максимальная длина одного сообщения при подаче на сжатие (символов),
+# чтобы запрос к модели не раздувался.
+COMPACT_MSG_CAP = 2000
 # Модель для генерации summary (используется GigaChat)
 COMPACT_MODEL = "GigaChat"
 
 # --- Цены DeepSeek, юань за 1М токенов (вход без кэша/выход, off-peak) ---
-DS_PRICE_INPUT_PER_M = {"deepseek-v4-flash": 1.5, "deepseek-v4-pro": 4.5}
-DS_PRICE_OUTPUT_PER_M = {"deepseek-v4-flash": 4.5, "deepseek-v4-pro": 13.5}
+DS_PRICE_INPUT_PER_M = {"deepseek-flash": 1.5}
+DS_PRICE_OUTPUT_PER_M = {"deepseek-flash": 4.5}
 

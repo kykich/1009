@@ -21,16 +21,17 @@
     var mtEnable = document.getElementById("max-tokens-enable");
     var mtInput = document.getElementById("max-tokens");
 
-    // Сжатие истории
-    var compactEnable = document.getElementById("compact-enable");
+    // Автоматическое сжатие истории (без кнопки — включается само).
     var compactKeep = document.getElementById("compact-keep");
-    var compactGenerate = document.getElementById("compact-generate");
     var tsTotal = document.getElementById("ts-total");
     var tsIn = document.getElementById("ts-in");
     var tsOut = document.getElementById("ts-out");
     var tsHist = document.getElementById("ts-hist");
     var tsHistPct = document.getElementById("ts-hist-pct");
+    var tsModelsTitle = document.getElementById("ts-models-title");
     var tsModels = document.getElementById("ts-models");
+    var tsCompacted = document.getElementById("ts-compacted");
+    var tsFromSummary = document.getElementById("ts-from-summary");
     var segIn = document.getElementById("seg-in");
     var segOut = document.getElementById("seg-out");
     var filesInput = document.getElementById("files-input");
@@ -54,11 +55,11 @@
     var MTOK_DEFAULT = 2048;
     var MTOK_MIN = 1, MTOK_MAX = 100000, MTOK_STEP = 50;
 
-    // Состояние сжатия истории
+    // Состояние НАСТРОЙКИ сжатия: сколько последних сообщений хранить
+    // полностью. Само сжатие (генерация summary) происходит автоматически
+    // на сервере после накопления порога несжатых сообщений.
     var compactState = {
-        enabled: false,
         keep: 10,
-        summary: "",
     };
 
     // Данные для кнопки «Анализ».
@@ -280,6 +281,22 @@
         if (!modelEl) return;
         var on = modelState.filter(function (m) { return m.on; }).map(function (m) { return m.label; });
         modelEl.textContent = on.length ? on.join(" · ") : "Все модели (по умолчанию)";
+        renderModelsTitle(on);
+    }
+
+    // Заголовок блока статистики («Токены по моделям») приводим в
+    // соответствие с реально используемыми моделями.
+    function renderModelsTitle(labels) {
+        if (!tsModelsTitle) return;
+        var on = labels || modelState
+            .filter(function (m) { return m.on; })
+            .map(function (m) { return m.label; });
+        if (!on.length) {
+            tsModelsTitle.textContent = "Токены по моделям";
+            return;
+        }
+        tsModelsTitle.innerHTML = 'Токены по моделям <span class="tstat-head-models">' +
+            esc(on.join(" · ")) + "</span>";
     }
 
     // Собирает список выбранных моделей для отправки на сервер.
@@ -317,97 +334,46 @@
     if (mtInput) mtInput.addEventListener("change", refreshMtUI);
 
     // ------------------------------------------------------------------
-    // Сжатие истории
+    // Управление контекстом (автоматическое сжатие истории)
     // ------------------------------------------------------------------
-    function refreshCompactUI() {
-        var on = compactEnable ? compactEnable.checked : false;
-        if (compactKeep) {
-            compactKeep.disabled = !on;
-            if (on && !compactKeep.value) compactKeep.value = compactState.keep;
-        }
-        if (compactGenerate) {
-            compactGenerate.disabled = !on;
-        }
-    }
+    // Настройка: сколько последних сообщений сохранять полностью.
+    // Ранняя история автоматически заменяется на summary на сервере —
+    // отдельной кнопки «Сжать» нет.
 
     function getCompactPayload() {
-        if (!compactEnable || !compactEnable.checked) {
-            return null;
-        }
-        var keep = parseInt(compactKeep.value, 10);
-        if (isNaN(keep) || keep < 0) keep = 0;
-        return {
-            enabled: true,
-            keep: keep,
-            summary: compactState.summary || "",
-        };
+        // Сжатие всегда включено (автоматическое). От клиента передаём
+        // только настройку keep — сколько последних сообщений оставлять.
+        var keep = parseInt(compactKeep ? compactKeep.value : compactState.keep, 10);
+        if (isNaN(keep) || keep < 1) keep = compactState.keep || 10;
+        return { enabled: true, keep: keep };
     }
 
     function applyCompactFromServer(compact) {
         if (!compact) return;
-        compactState.enabled = !!compact.enabled;
-        compactState.keep = parseInt(compact.keep, 10) || 10;
-        compactState.summary = compact.summary || "";
-        if (compactEnable) compactEnable.checked = compactState.enabled;
-        if (compactKeep) compactKeep.value = compactState.keep;
-        refreshCompactUI();
+        var keep = parseInt(compact.keep, 10);
+        if (isNaN(keep) || keep < 1) keep = compactState.keep || 10;
+        compactState.keep = keep;
+        if (compactKeep) compactKeep.value = keep;
     }
 
-    if (compactEnable) {
-        compactEnable.addEventListener("change", function () {
-            compactState.enabled = compactEnable.checked;
-            refreshCompactUI();
-            // Сохраняем настройки на сервер
-            saveCompactSettings();
-        });
-    }
     if (compactKeep) {
+        compactState.keep = parseInt(compactKeep.value, 10) || compactState.keep;
         compactKeep.addEventListener("change", function () {
             var v = parseInt(compactKeep.value, 10);
-            if (isNaN(v) || v < 0) v = 0;
+            if (isNaN(v) || v < 1) v = 1;
+            if (v > 100) v = 100;
+            compactKeep.value = v;
             compactState.keep = v;
             saveCompactSettings();
         });
     }
-    if (compactGenerate) {
-        compactGenerate.addEventListener("click", function () {
-            if (busy) return;
-            compactGenerate.disabled = true;
-            setStatus("Сжимаю историю…", "");
-            fetch("/api/compact_summary", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ keep: compactState.keep }),
-            })
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                if (data.ok && data.summary) {
-                    compactState.summary = data.summary;
-                    compactState.enabled = true;
-                    if (compactEnable) compactEnable.checked = true;
-                    refreshCompactUI();
-                    saveCompactSettings();
-                    setStatus("История сжата.", "ok");
-                } else {
-                    setStatus((data.detail || "Не удалось сжать."), "error");
-                }
-            })
-            .catch(function (err) {
-                setStatus("Ошибка: " + err.message, "error");
-            })
-            .finally(function () {
-                compactGenerate.disabled = false;
-            });
-        });
-    }
 
     function saveCompactSettings() {
-        var payload = getCompactPayload();
-        if (!payload) return;
+        // Сохраняем настройку keep на сервер (сжатие включено всегда).
         fetch("/api/compact", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(getCompactPayload()),
         }).catch(function () {});
     }
 
@@ -466,6 +432,19 @@
                 segOut.style.width = "50%";
             }
         }
+    }
+
+    // Счётчики управления контекстом: сколько сообщений сжато (summary)
+    // и сколько сообщений в запросе заменено summary.
+    function applyContextStats(ctx) {
+        if (!ctx) return;
+        if (tsCompacted) tsCompacted.textContent = fmt(parseInt(ctx.compacted, 10) || 0);
+        if (tsFromSummary) tsFromSummary.textContent = fmt(parseInt(ctx.from_summary, 10) || 0);
+    }
+
+    function resetContextStats() {
+        if (tsCompacted) tsCompacted.textContent = "0";
+        if (tsFromSummary) tsFromSummary.textContent = "0";
     }
 
     // ------------------------------------------------------------------
@@ -670,6 +649,7 @@
             render();
             addTokenUsage(data.usage);
             addAnswerUsage(data.answers);
+            applyContextStats(data.context);
             renderTrace(data.trace, data.meta);
         })
         .catch(function (err) { setStatus("Ошибка связи: " + err.message, "error"); })
@@ -737,6 +717,7 @@
             render();
             addTokenUsage(data.usage);
             addAnswerUsage(data.answers);
+            applyContextStats(data.context);
             renderTrace(data.trace, data.meta);
         })
         .catch(function (err) { setStatus("Ошибка связи: " + err.message, "error"); })
@@ -761,17 +742,14 @@
         analysisItem = null;
         lastAnswers = null;
         lastQuestion = "";
-        compactState.summary = "";
-        compactState.enabled = false;
         var analyzeBtn = document.getElementById("analyze");
         if (analyzeBtn) analyzeBtn.disabled = false;
         // анализ доступен только когда есть три ответа; по умолчанию оставим активным
         resetTokenStats();
         resetModelStats();
+        resetContextStats();
         render();
         renderTrace(null, null);
-        if (compactEnable) compactEnable.checked = false;
-        refreshCompactUI();
         setStatus(statusText, "ok");
         qEl.focus();
     }
@@ -813,6 +791,7 @@
                     });
                     renderTokenStats();
                     renderModelStats();
+                    applyContextStats(d.context);
                     render();
                     if (d.has_history) {
                         setStatus("Загружена сохранённая сессия.", "ok");
@@ -887,8 +866,9 @@
     // Инициализация настройки max_tokens (поле выключено по умолчанию).
     if (mtInput) { mtInput.value = MTOK_DEFAULT; }
     refreshMtUI();
-    refreshCompactUI();
     renderModelStats();
+    renderModelsTitle();
+    resetContextStats();
     renderFiles();
 
     // Загружаем историю с сервера (если она есть на диске).

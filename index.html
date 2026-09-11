@@ -60,7 +60,7 @@
             <header class="chat-head">
                 <!-- Статистика токенов по моделям + общий итог (столбиком) -->
                 <div class="tstat">
-                    <div class="tstat-head">Токены по моделям</div>
+                    <div class="tstat-head" id="ts-models-title">Токены по моделям</div>
                     <ul class="tstat-models" id="ts-models">
                         <!-- JS: строки по моделям (название · запрос/ответ · цена) -->
                     </ul>
@@ -86,6 +86,12 @@
                         <i class="sw sw-hist"></i>История&nbsp;<b id="ts-hist">0</b>
                         <span class="tstat-pct" id="ts-hist-pct">(0%)</span>
                     </div>
+                    <div class="tstat-line" title="Сколько сообщений истории покрыто summary (автосжатие)">
+                        <i class="sw sw-compact"></i>Сжато&nbsp;<b id="ts-compacted">0</b>
+                    </div>
+                    <div class="tstat-line" title="Сколько сообщений в запросе заменено summary (вытеснено из контекста)">
+                        <i class="sw sw-fromsum"></i>Из summary&nbsp;<b id="ts-from-summary">0</b>
+                    </div>
                 </div>
             </header>
 
@@ -105,22 +111,17 @@
                     <span class="gen-note">лимит новых токенов ответа (выкл — значение модели по умолчанию)</span>
                 </div>
 
-                <!-- Сжатие истории -->
+                <!-- Автоматическое сжатие истории (без кнопки).
+                     Summary генерируется само после накопления указанного
+                     числа несжатых сообщений. -->
                 <div class="gen-bar compact-bar">
-                    <label class="gen-switch">
-                        <input type="checkbox" id="compact-enable">
-                        <span class="gen-name">Сжатие истории</span>
-                    </label>
                     <label class="compact-label">
-                        <span>сохранить</span>
+                        <span>Сжатие истории автоматически: сохранить</span>
                         <input type="number" id="compact-keep" class="gen-input compact-input"
-                               min="0" max="100" step="1" placeholder="10" disabled>
-                        <span>сообщений</span>
+                               min="1" max="100" step="1" placeholder="10">
+                        <span>последних сообщений</span>
                     </label>
-                    <button type="button" id="compact-generate" class="btn-side link compact-btn" disabled>
-                        Сжать
-                    </button>
-                    <span class="gen-note">ранняя история → summary, последние N — полностью</span>
+                    <span class="gen-note">ранняя история → summary, последние N — полностью (автоматически)</span>
                 </div>
             </div>
 
