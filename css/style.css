@@ -698,4 +698,27 @@ body { font-family: 'Segoe UI', Arial, sans-serif; color: var(--text); overflow:
 }
 .files-actions .btn-side { flex: 1 1 0; }
 
+/* ===== Автотест: 50 запросов по теме (левая панель) ===== */
+.autotest-bar {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+}
+.autotest-bar label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: .66rem;
+    color: #8a92a6;
+}
+.autotest-bar .autotest-count { flex: 1 1 0; }
+.autotest-bar .autotest-delay { flex: 1 1 0; }
+.autotest-bar .gen-input {
+    width: 100%;
+    box-sizing: border-box;
+}
+.autotest-bar input:disabled {
+    opacity: .5;
+}
+
 

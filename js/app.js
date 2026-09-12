@@ -39,6 +39,10 @@
     var filesList = document.getElementById("files-list");
     var filesClear = document.getElementById("files-clear");
     var filesAsk = document.getElementById("files-ask");
+    var autotestStart = document.getElementById("autotest-start");
+    var autotestStop = document.getElementById("autotest-stop");
+    var autotestCount = document.getElementById("autotest-count");
+    var autotestDelay = document.getElementById("autotest-delay");
 
     var busy = false;
 
@@ -343,24 +347,27 @@
     function getCompactPayload() {
         // Сжатие всегда включено (автоматическое). От клиента передаём
         // только настройку keep — сколько последних сообщений оставлять.
+        // keep = 0 → сжатие НЕ применяется (ни подстановка summary, ни автосжатие).
         var keep = parseInt(compactKeep ? compactKeep.value : compactState.keep, 10);
-        if (isNaN(keep) || keep < 1) keep = compactState.keep || 10;
+        if (isNaN(keep) || keep < 0) keep = compactState.keep;
+        if (keep < 0) keep = 0;
         return { enabled: true, keep: keep };
     }
 
     function applyCompactFromServer(compact) {
         if (!compact) return;
         var keep = parseInt(compact.keep, 10);
-        if (isNaN(keep) || keep < 1) keep = compactState.keep || 10;
+        if (isNaN(keep) || keep < 0) keep = compactState.keep;
         compactState.keep = keep;
         if (compactKeep) compactKeep.value = keep;
     }
 
     if (compactKeep) {
-        compactState.keep = parseInt(compactKeep.value, 10) || compactState.keep;
+        compactState.keep = parseInt(compactKeep.value, 10);
+        if (isNaN(compactState.keep)) compactState.keep = 10;
         compactKeep.addEventListener("change", function () {
             var v = parseInt(compactKeep.value, 10);
-            if (isNaN(v) || v < 1) v = 1;
+            if (isNaN(v) || v < 0) v = 0;     // 0 = сжатие выключено
             if (v > 100) v = 100;
             compactKeep.value = v;
             compactState.keep = v;
@@ -670,6 +677,129 @@
     });
     if (filesClear) filesClear.addEventListener("click", clearFiles);
     if (filesAsk) filesAsk.addEventListener("click", askFiles);
+
+    // ------------------------------------------------------------------
+    // Автотест: тема из окна запроса отправляется N раз подряд
+    // ------------------------------------------------------------------
+    // Тема — текст в #question. Каждый запрос идёт как обычный (/api/ask),
+    // пишется в историю и участвует в автосжатии. Ответы показываются в чате.
+    var AUTO_DEFAULT_COUNT = 50;
+    var autoRunning = false;      // идёт ли прогон
+    var autoStopped = false;      // запрошен ли останов
+
+    function autoStop() {
+        if (!autoRunning) return;
+        autoStopped = true;
+        setStatus("Останавливаю автотест после текущего запроса…", "");
+    }
+
+    // Один запрос автотеста; возвращает Promise<{ok, data}>.
+    function autoAskOnce(question) {
+        var body = {
+            question: question,
+            models: selectedModelsPayload(),
+            max_tokens: mtValue(),
+            compact: getCompactPayload(),
+        };
+        return fetch("/api/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+        })
+        .then(function (resp) {
+            return resp.json().catch(function () {
+                return { ok: false, error: "Сервер вернул некорректный ответ." };
+            });
+        })
+        .then(function (data) {
+            if (data.ok) {
+                items.push({ role: "user", content: question });
+                items.push({ role: "assistant", content: data.text || "",
+                             html: data.html || "", answers: data.answers || [] });
+                lastQuestion = question;
+                lastAnswers = data.answers || null;
+                analysisItem = null;
+                render();
+                addTokenUsage(data.usage);
+                addAnswerUsage(data.answers);
+                applyContextStats(data.context);
+                renderTrace(data.trace, data.meta);
+            }
+            return { ok: !!data.ok, error: data.error || "" };
+        })
+        .catch(function (err) {
+            return { ok: false, error: err.message };
+        });
+    }
+
+    function delay(ms) {
+        return new Promise(function (res) { setTimeout(res, ms); });
+    }
+
+    function runAutoTest() {
+        if (busy || autoRunning) return;
+        var theme = qEl.value.trim();
+        if (!theme) { setStatus("Введите тему в окне запроса.", "error"); return; }
+
+        var count = parseInt(autotestCount ? autotestCount.value : AUTO_DEFAULT_COUNT, 10);
+        if (isNaN(count) || count < 1) count = AUTO_DEFAULT_COUNT;
+        if (count > 500) count = 500;
+        if (autotestCount) autotestCount.value = count;
+
+        var delaySec = parseFloat(autotestDelay ? autotestDelay.value : 1);
+        if (isNaN(delaySec) || delaySec < 0) delaySec = 1;
+        if (delaySec > 60) delaySec = 60;
+        if (autotestDelay) autotestDelay.value = delaySec;
+
+        autoRunning = true;
+        autoStopped = false;
+        busy = true;
+        submit.disabled = true;
+        if (filesAsk) filesAsk.disabled = true;
+        if (autotestStart) autotestStart.disabled = true;
+        if (autotestStop) autotestStop.disabled = false;
+        qEl.value = "";
+
+        var done = 0, errors = 0;
+        var total = count;
+
+        function step() {
+            if (autoStopped || done >= total) {
+                finish();
+                return;
+            }
+            setStatus("Автотест: " + (done + 1) + "/" + total +
+                      " · ошибок: " + errors, "");
+            autoAskOnce(theme).then(function (res) {
+                done++;
+                if (!res.ok) errors++;
+                if (autoStopped || done >= total) {
+                    finish();
+                    return;
+                }
+                delay(Math.round(delaySec * 1000)).then(step);
+            });
+        }
+
+        function finish() {
+            autoRunning = false;
+            busy = false;
+            submit.disabled = false;
+            if (filesAsk) filesAsk.disabled = false;
+            if (autotestStart) autotestStart.disabled = false;
+            if (autotestStop) autotestStop.disabled = true;
+            var msg = "Автотест завершён: " + done + "/" + total +
+                      (errors ? (" · ошибок: " + errors) : "");
+            if (autoStopped) msg = "Автотест остановлен: " + done + "/" + total +
+                      (errors ? (" · ошибок: " + errors) : "");
+            setStatus(msg, errors ? "error" : "ok");
+        }
+
+        step();
+    }
+
+    if (autotestStart) autotestStart.addEventListener("click", runAutoTest);
+    if (autotestStop) autotestStop.addEventListener("click", autoStop);
 
     // ------------------------------------------------------------------
     // Отправка запроса

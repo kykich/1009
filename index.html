@@ -51,6 +51,25 @@
                 <button id="files-ask" type="button" class="btn-side">Анализ файлов</button>
             </div>
 
+            <!-- Автоматический тест: тема из окна запроса отправляется 50 раз -->
+            <div class="side-title side-sub">Автотест</div>
+            <div class="autotest-bar">
+                <label class="autotest-count">
+                    <span>повторов</span>
+                    <input type="number" id="autotest-count" class="gen-input" min="1" max="500" step="1" value="50">
+                </label>
+                <label class="autotest-delay">
+                    <span>пауза, с</span>
+                    <input type="number" id="autotest-delay" class="gen-input" min="0" max="60" step="0.5" value="1">
+                </label>
+            </div>
+            <div class="files-actions">
+                <button id="autotest-start" type="button" class="btn-side"
+                        title="Тема — текст в окне запроса. Он отправится подряд заданное число раз (как обычные запросы, с записью в историю).">
+                    Автотест</button>
+                <button id="autotest-stop" type="button" class="btn-side link" disabled>Стоп</button>
+            </div>
+
             <button id="newchat" type="button" class="btn-side link"
                     title="Начать новый разговор (очистить историю)">Новый разговор</button>
         </aside>
@@ -118,10 +137,10 @@
                     <label class="compact-label">
                         <span>Сжатие истории автоматически: сохранить</span>
                         <input type="number" id="compact-keep" class="gen-input compact-input"
-                               min="1" max="100" step="1" placeholder="10">
-                        <span>последних сообщений</span>
+                               min="0" max="100" step="1" placeholder="10">
+                        <span>последних сообщений (0 — не сжимать)</span>
                     </label>
-                    <span class="gen-note">ранняя история → summary, последние N — полностью (автоматически)</span>
+                    <span class="gen-note">ранняя история → summary, последние N — полностью; 0 — сжатие выключено</span>
                 </div>
             </div>
 
