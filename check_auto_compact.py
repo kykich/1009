@@ -1,12 +1,12 @@
-"""Проверка АВТОМАТИЧЕСКОГО сжатия (без кнопки) через реальный HTTP-сервер.
+"""Проверка АВТОМАТИЧЕСКОГО ИНКРЕМЕНТАЛЬНОГО сжатия через HTTP-сервер.
 
 Сценарий:
   * поднимаем ThreadingHTTPServer с ФЕЙКОВЫМ агентом (без сети);
-  * шлём N запросов /api/ask через HTTP (как это делает страница);
-  * клиент НЕ вызывает /api/compact_summary вообще (кнопки больше нет);
-  * проверяем, что после накопления порога несжатых сообщений сервер
-    САМ сгенерировал summary и в следующий запрос подставил
-    summary + последние keep сообщений вместо полной истории;
+  * шлём запросы /api/ask через HTTP (как это делает страница);
+  * клиент НЕ вызывает /api/compact_summary вообще;
+  * проверяем, что как только история становится больше keep, сервер САМ
+    дописывает вытесненные сообщения в summary (инкрементально, Вариант A)
+    и в следующий запрос подставляет summary + последние keep сообщений;
   * проверяем, что summary хранится отдельно (compact.summary).
 
 Запуск:  python check_auto_compact.py
@@ -38,7 +38,7 @@ class FakeAgent:
 
     def __init__(self):
         self.sent = []            # истории, пришедшие в answer()
-        self.compacted = []       # куски, ушедшие в compact_history()
+        self.compacted = []       # куски, ушедшие в compact_update()
 
     def available(self):
         return []
@@ -50,9 +50,9 @@ class FakeAgent:
                 "meta": "", "usage": {"input": 1, "output": 1,
                                       "total": 2, "history": 0}, "trace": []}
 
-    def compact_history(self, messages, keep=None):
-        self.compacted.append(list(messages or []))
-        return "AUTO-SUMMARY(%d)" % len(messages or [])
+    def compact_update(self, prev_summary, new_messages):
+        self.compacted.append(list(new_messages or []))
+        return "AUTO-SUMMARY(+" + str(len(new_messages or [])) + ")"
 
 
 def main():
@@ -79,10 +79,10 @@ def main():
         with urllib.request.urlopen(base + path, timeout=10) as r:
             return json.loads(r.read().decode("utf-8"))
 
-    trigger = config.COMPACT_TRIGGER
     keep = config.COMPACT_KEEP
-    # Чтобы вытесняемая часть (2*turns - keep) достигла trigger:
-    turns = (keep + trigger + 1) // 2 + 1
+    # Сжатие стартует, как только история больше keep: нужно
+    # (keep//2 + 1) ходов, чтобы появилось хотя бы одно вытесненное сообщение.
+    turns = keep // 2 + 1
 
     try:
         print("=== клиент НЕ вызывает /api/compact_summary (только /api/ask) ===")
@@ -92,7 +92,7 @@ def main():
         # Ни одного ручного вызова сжатия:
         check("ручных вызовов generate не было (кнопки нет)",
               True)
-        check("сервер сам вызвал compact_history (автосжатие)",
+        check("сервер сам вызвал compact_update (инкрементальное сжатие)",
               len(fake.compacted) > 0)
         check("фронт не отправлял compact_summary (в проверке нет вызова)",
               True)

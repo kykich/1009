@@ -1,8 +1,9 @@
 """Проверка механизма управления контекстом (офлайн, без сети).
 
-Проверяет три требования:
+Проверяет требования:
   1) последние N сообщений хранятся/передаются «как есть»;
-  2) вытесняемая часть заменяется summary (триггер каждые COMPACT_TRIGGER);
+  2) сжатие ИНКРЕМЕНТАЛЬНОЕ: начинается с N+1-го сообщения и дописывает
+     вытесненные сообщения в summary по мере вытеснения (Вариант A);
   3) summary хранится ОТДЕЛЬНО и подставляется в запрос вместо истории.
 
 Запуск:  python check_context.py
@@ -63,21 +64,39 @@ def main():
           and "SUMMARY" in ctx[0].get("content", ""))
 
     print()
-    print("=== Требование 2: вытесняемую часть заменяет summary ===")
-    store2, path2 = make_store()
-    keep2 = config.COMPACT_KEEP
-    add_turns(store2, (keep2 + config.COMPACT_TRIGGER) // 2)
-    n_msgs = len(store2.snapshot())
-    head, end = store2.head_to_compact()
-    check("вытесняемая часть = всё, кроме последних keep",
-          end == n_msgs - keep2)
-    check("срабатывает триггер автосжатия (>=%d)" % config.COMPACT_TRIGGER,
-          store2.should_auto_compact())
-    # до порога автосжатие не срабатывает
-    store3, path3 = make_store()
-    add_turns(store3, 2)
-    check("до порога автосжатие НЕ срабатывает",
-          not store3.should_auto_compact())
+    print("=== Требование 2: инкрементальное сжатие начинается с N+1 ===")
+    keep2 = keep
+    # Ровно keep сообщений — сжимать нечего.
+    store_eq, path_eq = make_store()
+    add_turns(store_eq, keep2 // 2)          # ровно keep2 сообщений
+    n_eq = len(store_eq.snapshot())
+    head_eq, _ = store_eq.head_to_compact()
+    check("при N сообщений (ровно keep) вытесненных нет",
+          n_eq == keep2 and len(head_eq) == 0)
+    check("при N сообщений сжатие НЕ срабатывает",
+          not store_eq.should_auto_compact())
+
+    # keep+1 сообщение — появилось ровно 1 вытесненное.
+    store_plus, path_plus = make_store()
+    add_turns(store_plus, keep2 // 2)        # ровно keep2 сообщений
+    store_plus.messages.append({"role": "user", "content": "лишнее"})
+    n_plus = len(store_plus.snapshot())
+    head_plus, end_plus = store_plus.head_to_compact()
+    check("с N+1-го сообщения появляется 1 вытесненное",
+          n_plus == keep2 + 1 and len(head_plus) == 1)
+    check("сжатие срабатывает сразу (>=1 вытесненного)",
+          store_plus.should_auto_compact())
+    check("граница покрытия end = len - keep",
+          end_plus == n_plus - keep2)
+
+    # Добавили ещё 2 сообщения — вытесненных стало 3 (инкрементально копится).
+    store_plus.messages.append({"role": "user", "content": "q+2"})
+    store_plus.messages.append({"role": "assistant", "content": "a+2"})
+    store_plus.messages.append({"role": "user", "content": "q+3"})
+    n_more = len(store_plus.snapshot())
+    head_more, _ = store_plus.head_to_compact()
+    check("вытесненных копится по мере вытеснения (%d)" % len(head_more),
+          len(head_more) == n_more - keep2)
 
     print()
     print("=== Требование 3: summary хранится отдельно и подставляется ===")
@@ -103,7 +122,7 @@ def main():
           and "SUMMARY" in ctx2[0].get("content", ""))
 
     print()
-    for p in (path, path2, path3):
+    for p in (path, path_eq, path_plus):
         try:
             os.remove(p)
         except OSError:
@@ -120,3 +139,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

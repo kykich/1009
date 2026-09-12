@@ -159,11 +159,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     # ---------------- Обработчики: делегируют всю работу агенту ----------------
 
     def _maybe_auto_compact(self):
-        """Автосжатие истории: обновляет summary при достижении порога.
+        """Инкрементальное сжатие истории: дописывает вытесненные сообщения.
 
-        Срабатывает, когда вытесняемая (несжатая) часть истории достигает
-        config.COMPACT_TRIGGER сообщений. Summary генерируется по этой части
-        (всё, кроме последних keep сообщений) и сохраняется отдельно.
+        Логика: как только история становится больше keep, каждое новое
+        вытесненное сообщение ДОПИСЫВАЕТСЯ в summary (Вариант A). Для keep = 5
+        сжатие начинается с 6-го сообщения и продолжается по мере вытеснения.
+        Summary хранится ОТДЕЛЬНО (compact.summary) и подставляется в
+        следующий запрос вместо вытесненной части истории.
         """
         try:
             if not self.session.should_auto_compact():
@@ -172,15 +174,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             if not head:
                 return
             keep = self.session.get_compact().get("keep", config.COMPACT_KEEP)
-            summary = self.agent.compact_history(head, keep=0)
+            prev_summary = self.session.get_compact().get("summary", "")
+            # Дописываем вытесненную часть в существующее summary.
+            summary = self.agent.compact_update(prev_summary, head)
             if summary:
-                # Сохраняем summary и границу: сообщения [0:end) покрыты им.
+                # Сохраняем summary и новую границу: сообщения [0:end) покрыты.
                 self.session.apply_summary(summary, upto=end, keep=keep)
-                print("[COMPACT] автосжатие: %d сообщ. -> summary (upto=%d)"
+                print("[COMPACT] сжатие: +%d сообщ. -> summary (upto=%d)"
                       % (len(head), end), flush=True)
         except Exception as exc:
-            # Автосжатие не должно ломать основной запрос.
-            print("[COMPACT] автосжатие не удалось: %s" % exc, flush=True)
+            # Сжатие не должно ломать основной запрос.
+            print("[COMPACT] сжатие не удалось: %s" % exc, flush=True)
 
     def _handle_ask(self):
         """Принимает запрос пользователя и передаёт его агенту.
@@ -232,9 +236,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "meta": result.get("meta", ""),
                 "usage": result.get("usage"),
             })
-            # Автосжатие: если вытесняемая часть достигла порога —
-            # обновляем summary (summary хранится отдельно и подставляется
-            # в следующий запрос вместо полной истории).
+            # Сжатие: если появились вытесненные сообщения — дописываем их
+            # в summary (инкрементально; для keep=5 — начиная с 6-го сообщения).
             self._maybe_auto_compact()
             result["compact"] = self.session.get_compact()
             # Статистика управления контекстом (сжатых/использованных из
@@ -326,11 +329,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         })
 
     def _handle_compact_summary(self):
-        """Генерирует summary по вытесняемой части истории сессии.
+        """Дописывает вытесненную часть истории в summary (по запросу).
 
-        Сжимаем только то, что выходит за пределы последних keep сообщений;
-        summary сохраняется отдельно и будет подставлено в следующий запрос
-        вместо полной истории.
+        Сжимаем только то, что вышло за пределы последних keep сообщений,
+        и ДОПИСЫВАЕМ это в существующее summary (инкрементально, Вариант A).
+        Summary сохраняется отдельно и будет подставлено в следующий запрос
+        вместо вытесненной части истории.
         """
         data = self._read_json_body()
         if not data:
@@ -343,22 +347,22 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         # Применяем актуальный keep перед вычислением вытесняемой части.
         self.session.set_compact(True, keep, None)
         head, end = self.session.head_to_compact()
-        if len(head) < config.COMPACT_MIN:
+        if not head:
             return self._send_json(200, {
                 "ok": True, "summary": self.session.get_compact().get("summary", ""),
-                "detail": "Вытесняемая часть мала (<%d) — сжимать нечего."
-                          % config.COMPACT_MIN,
+                "detail": "Нет вытесненных сообщений — сжимать нечего.",
             })
-        summary = self.agent.compact_history(head, keep=0)
+        prev_summary = self.session.get_compact().get("summary", "")
+        summary = self.agent.compact_update(prev_summary, head)
         if summary:
             self.session.apply_summary(summary, upto=end, keep=keep)
             return self._send_json(200, {
                 "ok": True, "summary": summary,
-                "detail": "Summary сгенерирован (%d сообщ.)." % len(head),
+                "detail": "Summary дополнен (%d сообщ.)." % len(head),
             })
         return self._send_json(200, {
             "ok": False, "summary": self.session.get_compact().get("summary", ""),
-            "detail": "Не удалось сгенерировать summary.",
+            "detail": "Не удалось обновить summary.",
         })
 
 

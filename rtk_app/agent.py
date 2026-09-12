@@ -306,6 +306,9 @@ class Agent:
         if not history or not compact.get("summary"):
             return history
         keep = max(0, compact.get("keep", config.COMPACT_KEEP))
+        # keep = 0 → сжатие не применяется: возвращаем полную историю.
+        if keep <= 0:
+            return history
         if keep >= len(history):
             return history
         recent = list(history[-keep:]) if keep > 0 else []
@@ -515,14 +518,33 @@ class Agent:
         head = messages[:-keep] if keep > 0 else list(messages)
         if len(head) < config.COMPACT_MIN:
             return None
+        return self.compact_update("", head)
 
-        # Формируем текст для сжатия (длинные сообщения обрезаем).
+    def compact_update(self, prev_summary, new_messages):
+        """Инкрементально ДОПИСЫВАЕТ вытесненные сообщения в summary (Вариант A).
+
+        prev_summary — уже существующее summary (может быть пустым).
+        new_messages — НОВЫЕ вытесненные сообщения (ещё не сжатые).
+
+        Возвращает обновлённое summary (строку) или None при ошибке/пустоте.
+        Новое summary = слияние прежнего текста и нового фрагмента.
+        """
+        new_messages = [m for m in (new_messages or []) if isinstance(m, dict)]
+        if not new_messages:
+            return None
+
         cap = config.COMPACT_MSG_CAP
-        lines = ["Сожми следующий фрагмент диалога в краткое summary.",
-                 "Сохрани ключевые факты, темы, договорённости и решения,",
-                 "чтобы по summary можно было продолжить беседу.",
-                 ""]
-        for m in head:
+        lines = [
+            "Обнови краткое summary диалога, добавив в него новый фрагмент.",
+            "Сохрани ключевые факты, темы, договорённости и решения,",
+            "чтобы по summary можно было продолжить беседу.",
+            "Не повторяйся, объедини прежнее и новое в единый связный текст.",
+            "",
+        ]
+        if prev_summary:
+            lines += ["Прежнее summary:", str(prev_summary), ""]
+        lines.append("Новый фрагмент диалога (вытеснен из контекста):")
+        for m in new_messages:
             role = m.get("role", "unknown")
             content = str(m.get("content", ""))
             if not content:
@@ -550,8 +572,8 @@ class Agent:
             elapsed = time.perf_counter() - t0
             summary = res.get("content", "") if isinstance(res, dict) else str(res)
             if summary:
-                print("[COMPACT] summary генерация %.2f c, длина %d, сжато %d сообщ."
-                      % (elapsed, len(summary), len(head)), flush=True)
+                print("[COMPACT] summary дополнен %.2f c, длина %d, +%d сообщ."
+                      % (elapsed, len(summary), len(new_messages)), flush=True)
             return summary
         except Exception as exc:
             print("[COMPACT] ошибка: %s" % exc, flush=True)

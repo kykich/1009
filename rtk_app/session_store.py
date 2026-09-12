@@ -83,7 +83,9 @@ class SessionStore:
                     # Согласованность: если summary есть, но граница покрытия
                     # не задана (старый файл без поля upto) — выводим её из
                     # правила «всё, кроме последних keep сообщений».
-                    if self.compact["summary"] and self.compact["upto"] == 0:
+                    # При keep = 0 сжатие не применяется — границу не выводим.
+                    if (self.compact["summary"] and self.compact["upto"] == 0
+                            and self.compact["keep"] > 0):
                         keep = max(0, self.compact["keep"])
                         self.compact["upto"] = max(0, len(self.messages) - keep)
             except Exception:
@@ -186,7 +188,9 @@ class SessionStore:
             if not self.compact["enabled"] or not self.compact["summary"]:
                 return list(self.messages)
             keep = max(0, self.compact["keep"])
-            # Последние keep сообщений — всегда полностью, «как есть».
+            # keep = 0 → сжатие не применяется: отдаём полную историю как есть.
+            if keep <= 0:
+                return list(self.messages)
             recent = list(self.messages[-keep:]) if keep > 0 else []
             summary_msg = {
                 "role": "system",
@@ -212,7 +216,9 @@ class SessionStore:
             total = len(self.messages)
             keep = max(0, self.compact["keep"])
             upto = max(0, self.compact.get("upto", 0))
-            has_summary = bool(self.compact["enabled"] and self.compact["summary"])
+            # keep = 0 → сжатие не применяется (ни подстановка, ни покрытие).
+            has_summary = bool(self.compact["enabled"] and self.compact["summary"]
+                               and keep > 0)
             if has_summary:
                 # Граница покрытия: сохранённое upto. Если оно не задано
                 # (0) при непустой истории — выводим «всё, кроме последних keep».
@@ -238,18 +244,22 @@ class SessionStore:
             }
 
     def head_to_compact(self):
-        """Возвращает вытесняемую (несжатую) часть истории.
+        """Возвращает НОВЫЕ вытесненные (ещё не сжатые) сообщения.
 
         Это сообщения, которые ещё не покрыты summary (индекс >= upto),
-        но уже должны быть вытеснены за пределы последних keep сообщений.
+        но уже вытеснены за пределы последних keep сообщений — их нужно
+        ДОПИСАТЬ в существующее summary (инкрементальное сжатие).
 
         Возвращает кортеж (head, end_index):
-          head      — список сообщений, подлежащих сжатию (может быть пуст);
-          end_index — индекс, до которого (не включая) они будут покрыты
-                      summary после сохранения (т.е. граница up_to).
+          head      — список новых вытесненных сообщений (может быть пуст);
+          end_index — индекс, до которого (не включая) история будет покрыта
+                      summary после дописывания (новая граница upto).
         """
         with self.lock:
             keep = max(0, self.compact["keep"])
+            # keep = 0 → сжатие не применяется: сжимать нечего.
+            if keep <= 0:
+                return [], max(0, self.compact.get("upto", 0))
             upto = max(0, self.compact.get("upto", 0))
             end = len(self.messages) - keep
             if end <= upto:
@@ -258,9 +268,17 @@ class SessionStore:
             return head, end
 
     def should_auto_compact(self):
-        """Пора ли запускать автосжатие (накопилось >= COMPACT_TRIGGER)."""
+        """Есть ли вытесненные (несжатые) сообщения для дописывания в summary.
+
+        Логика инкрементальная: сжатие начинается, как только история
+        становится больше keep (первое вытесненное сообщение), и продолжается
+        по мере дальнейшего вытеснения. Достаточно хотя бы одного сообщения.
+        """
+        # Сжатие не применяется при keep = 0 — сжимать нечего.
+        if max(0, self.compact["keep"]) <= 0:
+            return False
         head, _end = self.head_to_compact()
-        return len(head) >= config.COMPACT_TRIGGER
+        return len(head) >= 1
 
     def apply_summary(self, summary, upto=None, keep=None):
         """Сохраняет summary и границу покрытия (до какого сообщения)."""

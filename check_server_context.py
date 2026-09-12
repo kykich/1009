@@ -3,7 +3,7 @@
 Проверяет:
   * /api/session отдаёт поле compact (summary хранится отдельно);
   * _handle_ask передаёт агенту СЖАТУЮ историю (summary + последние N);
-  * автосжатие (без сети, генератор замокан) обновляет summary и границу;
+  * сжатие ИНКРЕМЕНТАЛЬНОЕ: дописывает вытесненное, как только история > keep;
   * _handle_compact НЕ затирает существующий summary пустой строкой.
 
 Запуск:  python check_server_context.py
@@ -40,9 +40,10 @@ class FakeAgent:
         return {"ok": True, "html": "", "text": "ok", "answers": [],
                 "meta": "", "usage": {}, "trace": []}
 
-    def compact_history(self, messages, keep=None):
-        # Заглушка генерации summary (без сети).
-        return "SUMMARY(сжато %d сообщ.)" % len(messages or [])
+    def compact_update(self, prev_summary, new_messages):
+        # Заглушка инкрементального дописывания summary (без сети).
+        return (prev_summary + " " if prev_summary else "") + \
+            "SUMMARY(+%d)" % len(new_messages or [])
 
 
 def new_handler():
@@ -62,21 +63,21 @@ def main():
 
     sess = srv._ServerState.session
 
-    print("=== _maybe_auto_compact: триггер и подстановка ===")
-    # Добавляем ходов меньше порога — сжатия не будет.
-    for i in range(3):
+    print("=== _maybe_auto_compact: инкрементальное сжатие ===")
+    # Добавляем ходов так, чтобы история была НЕ больше keep — сжатия не будет.
+    for i in range(config.COMPACT_KEEP // 2):
         sess.append_turn("q%d" % i, {"role": "assistant", "content": "a%d" % i})
     h = new_handler()
     h._maybe_auto_compact()
-    check("до порога summary пуст", not sess.get_compact().get("summary"))
+    check("пока история <= keep, summary пуст",
+          not sess.get_compact().get("summary"))
 
-    # Догоняем до порога (keep + trigger сообщений).
-    need_turns = (config.COMPACT_KEEP + config.COMPACT_TRIGGER) // 2
-    for i in range(3, need_turns):
-        sess.append_turn("q%d" % i, {"role": "assistant", "content": "a%d" % i})
+    # Добавляем ещё один ход — история > keep → появляется вытесненное.
+    sess.append_turn("q+", {"role": "assistant", "content": "a+"})
     h._maybe_auto_compact()
     comp = sess.get_compact()
-    check("после порога summary сгенерирован", bool(comp.get("summary")))
+    check("как только история > keep, summary сгенерирован",
+          bool(comp.get("summary")))
     check("сохранена граница upto", comp.get("upto", 0) > 0)
 
     print()
@@ -92,8 +93,6 @@ def main():
 
     print()
     print("=== _handle_compact не затирает summary пустой строкой ===")
-    class FakeH(new_handler_class := object):
-        pass
     keep_summary = sess.get_compact().get("summary")
     sess.set_compact(True, config.COMPACT_KEEP, None)  # эмуляция: summary=None
     check("summary сохранился после set_compact(None)",
